@@ -68,40 +68,26 @@ Dit project automatiseert het hele proces van het maken van een professioneel st
 
 ```
 ai-comic-book-generator/
-├── books/                  # Gegenereerde boeken
-│   ├── boek1_kat_avontuur/
-│   │   ├── images/
-│   │   ├── prompts/
-│   │   ├── pdf/
-│   │   └── metadata.json
-├── characters/             # Character sheets & referenties
-├── prompts/                # Prompt templates
-├── scripts/                # Python automation scripts
-├── stories/                # Verhalen en outlines
-├── output/                 # Tijdelijke bestanden
-├── README.md
-└── requirements.txt
+├── stories/                # Verhalen, outlines en scripts
+├── character-sheets/       # Personage referenties en sheets
+├── prompts/                # Generatie prompts per pagina
+├── images/                 # Gegenereerde afbeeldingen per boek
+├── pdfs/                   # Voltooide PDF boeken
+├── scripts/                # Python automatiseringsscripts
+├── docs/                   # Documentatie
+├── outputs/                # Tijdelijke outputs
+├── .github/                # Workflows
+└── README.md
 ```
 
 ---
 
-## 🚀 Hoe te gebruiken (binnenkort)
+## 🚀 Hoe te gebruiken
 
-1. Clone de repo
-2. Installeer dependencies
-3. Voeg je AI API keys toe (Grok, Claude, Midjourney, Flux, etc.)
-4. Run `python main.py --new-book "De jongen en de magische kat"`
+Binnenkort beschikbaar: volledige Python pipeline.
 
-Meer gedetailleerde instructies volgen zodra de eerste scripts klaar zijn.
+Voor nu werken we handmatig aan de pilot en bouwen we de automatisering stap voor stap op.
 
 ---
 
-## 🤝 Bijdragen
-
-Dit is een persoonlijk project dat snel groeit. Ideeën, suggesties en pull requests zijn welkom!
-
----
-
-**Gemaakt met ❤️ voor stripverhalen en AI**
-
-*Eerste versie - Mei 2026*
+**Gemaakt met ❤️ voor stripverhalen en AI** - Mei 2026
