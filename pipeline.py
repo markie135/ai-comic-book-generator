@@ -10,6 +10,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable, Iterable
 
+import ai_client
+
 
 LogFn = Callable[[str], None]
 
@@ -59,18 +61,45 @@ def run_pipeline(config: GenerationConfig, log: LogFn = print) -> list[Path]:
 
 def generate_story_draft(genre: str, tone: str, seed: str = "") -> str:
     seed_text = seed.strip()
+
+    if ai_client.has_openai():
+        system = (
+            "Je bent een creatieve strip-scenarioschrijver. Schrijf in het Nederlands. "
+            "Schrijf een korte verhaaldraft van maximaal 150 woorden voor een 10-pagina strip."
+        )
+        user = (
+            f"Genre: {genre}\nToon: {tone}\n"
+            + (f"Beginidee: {seed_text}\n" if seed_text else "")
+            + "Schrijf een emotioneel verhaal over een jongen die een kitten vindt in een oud stadje."
+        )
+        result = ai_client.generate_text(system, user, max_tokens=300)
+        if result and not result.startswith("[OpenAI fout"):
+            return result
+
+    # Fallback: template
     if seed_text:
         return (
             f"{seed_text}\n\n"
             f"Uitwerking: In dit {genre.lower()} verhaal met een {tone.lower()} toon verschuift "
             "de focus van onzekerheid naar verbondenheid, met kleine menselijke momenten als kern."
         )
-
     return DEFAULT_PILOT_STORY
 
 
 def generate_style_draft(base_style: str, setting_hint: str = "") -> str:
     hint = setting_hint.strip() or "retro buurt met bakstenen straten"
+
+    if ai_client.has_openai():
+        system = (
+            "Je bent een visual director voor een zwart-wit retro mangastrip. "
+            "Beschrijf in het Nederlands in max 80 woorden de visuele stijl."
+        )
+        user = f"Basistijl: {base_style}\nSetting hint: {hint}"
+        result = ai_client.generate_text(system, user, max_tokens=150)
+        if result and not result.startswith("[OpenAI fout"):
+            return result
+
+    # Fallback: template
     return (
         f"{base_style}. Focus op {hint}. Gebruik handgeinkte zwarte lijnen, screentone schaduwen, "
         "witte negatieve ruimte, dynamische panel compositie en herkenbare silhouette-consistentie."
@@ -149,16 +178,33 @@ def _build_page_plan(story_text: str, num_pages: int, genre: str, tone: str) -> 
     if num_pages == 10:
         return _pilot_page_plan_10(genre, tone)
 
+    # Bouw een structureel page plan voor willekeurig aantal pagina's
+    # Gebruik de klassieke 5-act verdeling: opzet / opbouw / ommekeer / herstel / afronding
+    # Verdeeld in paren (2 pagina's per fase), met extra opbouw/herstel bij meer pagina's
+    structures = _distribute_structures(num_pages)
     sentences = _split_sentences(story_text)
     if not sentences:
         sentences = [story_text or DEFAULT_PILOT_STORY]
-
     chunks = _chunk_evenly(sentences, num_pages)
+
     plan: list[dict] = []
-    for i, chunk in enumerate(chunks, start=1):
-        pair_index = (i - 1) // 2
-        structure = ["opzet", "opbouw", "ommekeer", "herstel", "afronding"][pair_index % 5]
+    for i, (structure, chunk) in enumerate(zip(structures, chunks), start=1):
         beat = " ".join(chunk).strip()
+        # Verrijk de beat met genre/tone context via LLM als beschikbaar
+        if ai_client.has_openai() and beat:
+            system = (
+                "Je bent een stripschrijver. Schrijf in het Nederlands. "
+                "Geef een concrete scènebeschrijving van max 30 woorden voor één strippage."
+            )
+            user = (
+                f"Verhaalfase: {structure}\nGenre: {genre}\nToon: {tone}\n"
+                f"Verhaaldeel: {beat}\n"
+                "Schrijf een bondige scène-omschrijving voor deze pagina."
+            )
+            llm_beat = ai_client.generate_text(system, user, max_tokens=80)
+            if llm_beat and not llm_beat.startswith("[OpenAI fout"):
+                beat = llm_beat
+
         plan.append(
             {
                 "page": i,
@@ -168,6 +214,28 @@ def _build_page_plan(story_text: str, num_pages: int, genre: str, tone: str) -> 
             }
         )
     return plan
+
+
+def _distribute_structures(num_pages: int) -> list[str]:
+    """
+    Verdeel num_pages over de 5 verhaalfasen met minimaal 1 pagina per fase.
+    Extra pagina's gaan naar opbouw en herstel (de langste fasen).
+    """
+    base = ["opzet", "opbouw", "ommekeer", "herstel", "afronding"]
+    if num_pages <= 5:
+        return base[:num_pages]
+
+    # Begin met 1 per fase, verdeel resterende over opbouw en herstel
+    counts = {s: 1 for s in base}
+    extra = num_pages - 5
+    growth_order = ["opbouw", "herstel", "opzet", "ommekeer", "afronding"]
+    for i in range(extra):
+        counts[growth_order[i % len(growth_order)]] += 1
+
+    result: list[str] = []
+    for s in base:
+        result.extend([s] * counts[s])
+    return result
 
 
 def _pilot_page_plan_10(genre: str, tone: str) -> list[dict]:
@@ -234,24 +302,58 @@ def _build_page_prompts(
 
 def _render_placeholder_pages(images_dir: Path, page_prompts: list[dict], log: LogFn) -> list[str]:
     assets: list[str] = []
+    use_replicate = ai_client.has_replicate()
+
     for prompt_data in page_prompts:
         page = prompt_data["page"]
         txt_file = images_dir / f"page_{page:02d}_prompt.txt"
-        svg_file = images_dir / f"page_{page:02d}_placeholder.svg"
 
         paragraph_text = "\n\n".join(prompt_data.get("prompt_paragraphs", [prompt_data["prompt"]]))
         _write_text(txt_file, paragraph_text)
-        _write_text(svg_file, _svg_placeholder(prompt_data))
 
+        if use_replicate:
+            png_file = images_dir / f"page_{page:02d}.png"
+            # Bouw een compacte prompt voor het image model
+            image_prompt = _build_image_prompt(prompt_data)
+            success = ai_client.generate_image(image_prompt, png_file, log)
+            if success:
+                assets.append(str(png_file))
+                _log(log, f"Pagina {page:02d}: afbeelding gegenereerd -> {png_file.name}")
+                continue
+            _log(log, f"Pagina {page:02d}: Replicate mislukt, SVG placeholder als fallback")
+
+        svg_file = images_dir / f"page_{page:02d}_placeholder.svg"
+        _write_text(svg_file, _svg_placeholder(prompt_data))
         assets.append(str(svg_file))
         _log(log, f"Pagina {page:02d}: prompt + placeholder opgeslagen")
 
     return assets
 
 
-def _build_text_pdf(pdf_path: Path, title: str, page_prompts: list[dict], image_assets: list[str]) -> None:
-    pages: list[list[str]] = []
+def _build_image_prompt(prompt_data: dict) -> str:
+    """Bouw een compacte prompt geschikt voor SDXL op basis van de page prompt data."""
+    paragraphs = prompt_data.get("prompt_paragraphs", [])
+    # Neem de eerste 5 alinea's (header, beat, emotie, layout, visual goals)
+    core = "\n".join(paragraphs[:5]) if paragraphs else prompt_data.get("prompt", "")
+    return (
+        f"Retro black-and-white manga comic page. {core}. "
+        "Hand-inked lines, screentone shading, no color, paper grain texture, "
+        "dynamic panel composition, consistent character design."
+    )
 
+
+def _build_text_pdf(pdf_path: Path, title: str, page_prompts: list[dict], image_assets: list[str]) -> None:
+    # Probeer reportlab voor een PDF met echte afbeeldingen
+    has_png_assets = any(a.endswith(".png") and Path(a).exists() for a in image_assets)
+    if has_png_assets:
+        try:
+            _build_reportlab_pdf(pdf_path, title, page_prompts, image_assets)
+            return
+        except Exception:
+            pass  # Fallback op minimale PDF
+
+    # Fallback: pure-Python tekst PDF
+    pages: list[list[str]] = []
     pages.append(
         [
             title,
@@ -278,6 +380,54 @@ def _build_text_pdf(pdf_path: Path, title: str, page_prompts: list[dict], image_
 
     pages.append(["Eindblad", "Dank voor het lezen", "Einde van de pilot draft"])
     _write_minimal_pdf(pdf_path, pages)
+
+
+def _build_reportlab_pdf(pdf_path: Path, title: str, page_prompts: list[dict], image_assets: list[str]) -> None:
+    """Bouw een PDF met ingesloten PNG-afbeeldingen via reportlab."""
+    from reportlab.lib.pagesizes import A4  # type: ignore
+    from reportlab.lib.units import cm  # type: ignore
+    from reportlab.lib.styles import getSampleStyleSheet  # type: ignore
+    from reportlab.platypus import SimpleDocTemplate, Image as RLImage, Paragraph, Spacer, PageBreak  # type: ignore
+
+    page_width, page_height = A4
+    margin = 1.5 * cm
+    styles = getSampleStyleSheet()
+
+    story = []
+    story.append(Paragraph(f"<b>{title}</b>", styles["Title"]))
+    story.append(Paragraph("AI Comic Book Generator Draft", styles["Normal"]))
+    story.append(Paragraph(datetime.now().strftime("Gegenereerd op %Y-%m-%d %H:%M"), styles["Normal"]))
+    story.append(PageBreak())
+
+    for prompt_data, asset in zip(page_prompts, image_assets):
+        asset_path = Path(asset)
+        story.append(Paragraph(f"<b>Pagina {prompt_data['page']:02d}</b>", styles["Heading2"]))
+
+        if asset_path.suffix == ".png" and asset_path.exists():
+            max_w = page_width - 2 * margin
+            max_h = page_height * 0.65
+            story.append(RLImage(str(asset_path), width=max_w, height=max_h, kind="proportional"))
+            story.append(Spacer(1, 0.3 * cm))
+
+        story.append(Paragraph(f"Structuur: {prompt_data['pair_structure']} | Emotie: {prompt_data['emotion']}", styles["Normal"]))
+        story.append(Paragraph(f"Layout: {prompt_data['layout']}", styles["Normal"]))
+
+        prompt_paragraphs = prompt_data.get("prompt_paragraphs", [])
+        for para in prompt_paragraphs[:6]:
+            safe_para = para.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+            story.append(Paragraph(safe_para, styles["Normal"]))
+
+        story.append(PageBreak())
+
+    doc = SimpleDocTemplate(
+        str(pdf_path),
+        pagesize=A4,
+        leftMargin=margin,
+        rightMargin=margin,
+        topMargin=margin,
+        bottomMargin=margin,
+    )
+    doc.build(story)
 
 
 def _write_minimal_pdf(path: Path, pages: list[list[str]]) -> None:
